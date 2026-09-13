@@ -3,7 +3,6 @@ package com.example.memonote
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,20 +16,27 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Notes
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -41,9 +47,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -52,6 +60,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -60,11 +69,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val store = NoteStore(applicationContext)
-        setContent {
-            MemoTheme {
-                MemoApp(store)
-            }
-        }
+        setContent { MemoTheme { MemoApp(store) } }
     }
 }
 
@@ -75,7 +80,6 @@ private fun MemoTheme(content: @Composable () -> Unit) {
             primary = Color(0xFF4F5D95),
             onPrimary = Color.White,
             primaryContainer = Color(0xFFDCE2FF),
-            secondaryContainer = Color(0xFFE6E1F1),
             background = Color(0xFFF9F9FF),
             surface = Color(0xFFF9F9FF)
         ),
@@ -91,14 +95,22 @@ private fun MemoApp(store: NoteStore) {
     var editorNote by remember { mutableStateOf<Note?>(null) }
     var showEditor by rememberSaveable { mutableStateOf(false) }
     var showDeleteConfirmation by rememberSaveable { mutableStateOf(false) }
+    var showTrash by rememberSaveable { mutableStateOf(false) }
 
-    val filteredNotes = remember(notes, searchText) {
+    val activeNotes = notes.filter { it.deletedAt == null }
+    val filteredNotes = remember(activeNotes, searchText) {
         val query = searchText.trim()
-        if (query.isEmpty()) notes
-        else notes.filter { note ->
+        if (query.isEmpty()) activeNotes
+        else activeNotes.filter { note ->
             note.title.contains(query, ignoreCase = true) ||
                 note.content.contains(query, ignoreCase = true)
         }
+    }
+    val trashedNotes = notes.filter { it.deletedAt != null }.sortedByDescending { it.deletedAt }
+
+    fun persist(updatedNotes: List<Note>) {
+        notes = updatedNotes.sortedForDisplay()
+        store.save(notes)
     }
 
     fun openNewNote() {
@@ -113,34 +125,47 @@ private fun MemoApp(store: NoteStore) {
         showEditor = true
     }
 
-    fun saveNote(title: String, content: String) {
+    fun upsertNote(title: String, content: String) {
         val trimmedTitle = title.trim()
         val trimmedContent = content.trim()
-        if (trimmedTitle.isEmpty() && trimmedContent.isEmpty()) {
-            showEditor = false
-            return
-        }
-        val fallbackTitle = trimmedTitle.ifEmpty {
-            trimmedContent.lineSequence().firstOrNull()?.take(24) ?: "無題のメモ"
-        }
+        if (trimmedTitle.isEmpty() && trimmedContent.isEmpty()) return
+        val previous = editorNote
         val updated = Note(
-            id = editorNote?.id ?: System.currentTimeMillis(),
-            title = fallbackTitle,
+            id = previous?.id ?: System.currentTimeMillis(),
+            title = trimmedTitle.ifEmpty {
+                trimmedContent.lineSequence().firstOrNull()?.take(24) ?: "無題のメモ"
+            },
             content = trimmedContent,
-            updatedAt = System.currentTimeMillis()
+            updatedAt = System.currentTimeMillis(),
+            isPinned = previous?.isPinned ?: false
         )
-        notes = (notes.filterNot { it.id == updated.id } + updated)
-            .sortedByDescending(Note::updatedAt)
-        store.save(notes)
+        persist(notes.filterNot { it.id == updated.id } + updated)
+        editorNote = updated
+    }
+
+    fun moveToTrash() {
+        val id = editorNote?.id ?: return
+        persist(notes.map { note ->
+            if (note.id == id) note.copy(deletedAt = System.currentTimeMillis()) else note
+        })
+        showDeleteConfirmation = false
         showEditor = false
     }
 
-    fun deleteNote() {
-        val id = editorNote?.id ?: return
-        notes = notes.filterNot { it.id == id }
-        store.save(notes)
-        showDeleteConfirmation = false
-        showEditor = false
+    fun togglePin(note: Note) {
+        persist(notes.map { current ->
+            if (current.id == note.id) current.copy(isPinned = !current.isPinned) else current
+        })
+    }
+
+    fun restore(note: Note) {
+        persist(notes.map { current ->
+            if (current.id == note.id) current.copy(deletedAt = null, updatedAt = System.currentTimeMillis()) else current
+        })
+    }
+
+    fun permanentlyDelete(note: Note) {
+        persist(notes.filterNot { it.id == note.id })
     }
 
     Scaffold(
@@ -151,6 +176,11 @@ private fun MemoApp(store: NoteStore) {
                         Icon(Icons.Default.Notes, contentDescription = null)
                         Spacer(Modifier.width(10.dp))
                         Text("メモ帳", fontWeight = FontWeight.Bold)
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { showTrash = true }) {
+                        Icon(Icons.Default.DeleteOutline, contentDescription = "ゴミ箱")
                     }
                 }
             )
@@ -163,10 +193,7 @@ private fun MemoApp(store: NoteStore) {
         containerColor = MaterialTheme.colorScheme.background
     ) { innerPadding ->
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp)
+            modifier = Modifier.fillMaxSize().padding(innerPadding).padding(horizontal = 16.dp)
         ) {
             OutlinedTextField(
                 value = searchText,
@@ -194,7 +221,7 @@ private fun MemoApp(store: NoteStore) {
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(filteredNotes, key = Note::id) { note ->
-                        NoteCard(note = note, onClick = { openNote(note) })
+                        NoteCard(note, onClick = { openNote(note) }, onTogglePin = { togglePin(note) })
                     }
                 }
             }
@@ -205,7 +232,8 @@ private fun MemoApp(store: NoteStore) {
         NoteEditorDialog(
             note = editorNote,
             onDismiss = { showEditor = false },
-            onSave = ::saveNote,
+            onSave = { title, content -> upsertNote(title, content); showEditor = false },
+            onAutoSave = ::upsertNote,
             onDelete = if (editorNote == null) null else ({ showDeleteConfirmation = true })
         )
     }
@@ -213,90 +241,58 @@ private fun MemoApp(store: NoteStore) {
     if (showDeleteConfirmation) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirmation = false },
-            title = { Text("メモを削除しますか？") },
-            text = { Text("この操作は取り消せません。") },
-            confirmButton = {
-                TextButton(onClick = ::deleteNote) { Text("削除") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirmation = false }) { Text("キャンセル") }
-            }
+            title = { Text("ゴミ箱へ移動しますか？") },
+            text = { Text("ゴミ箱から復元できます。") },
+            confirmButton = { TextButton(onClick = ::moveToTrash) { Text("移動") } },
+            dismissButton = { TextButton(onClick = { showDeleteConfirmation = false }) { Text("キャンセル") } }
+        )
+    }
+
+    if (showTrash) {
+        TrashDialog(
+            notes = trashedNotes,
+            onDismiss = { showTrash = false },
+            onRestore = ::restore,
+            onPermanentlyDelete = ::permanentlyDelete
         )
     }
 }
 
 @Composable
-private fun NoteCard(note: Note, onClick: () -> Unit) {
+private fun NoteCard(note: Note, onClick: () -> Unit, onTogglePin: () -> Unit) {
     Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 18.dp, top = 15.dp, end = 8.dp, bottom = 15.dp),
+            modifier = Modifier.fillMaxWidth().padding(start = 18.dp, top = 15.dp, end = 8.dp, bottom = 15.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = note.title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Text(note.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(5.dp))
-                Text(
-                    text = note.content.ifEmpty { "本文なし" },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Text(notePreview(note.content), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(7.dp))
-                Text(
-                    text = formatDate(note.updatedAt),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                Text(formatDate(note.updatedAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            IconButton(onClick = onClick) {
-                Icon(Icons.Default.Edit, contentDescription = "編集")
+            IconButton(onClick = onTogglePin) {
+                Icon(Icons.Default.PushPin, contentDescription = "ピン留め", tint = if (note.isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            IconButton(onClick = onClick) { Icon(Icons.Default.Edit, contentDescription = "編集") }
         }
     }
 }
 
 @Composable
 private fun EmptyState(hasSearch: Boolean, onCreate: () -> Unit) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Surface(
-                modifier = Modifier.size(72.dp),
-                shape = RoundedCornerShape(24.dp),
-                color = MaterialTheme.colorScheme.primaryContainer
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(
-                        Icons.Default.Notes,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(36.dp)
-                    )
-                }
+            Surface(modifier = Modifier.size(72.dp), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.primaryContainer) {
+                Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Notes, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp)) }
             }
             Spacer(Modifier.height(16.dp))
-            Text(
-                text = if (hasSearch) "該当するメモがありません" else "メモはまだありません",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
+            Text(if (hasSearch) "該当するメモがありません" else "メモはまだありません", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             if (!hasSearch) {
                 Spacer(Modifier.height(6.dp))
                 Text("右下の＋からメモを作成できます。")
@@ -312,53 +308,97 @@ private fun NoteEditorDialog(
     note: Note?,
     onDismiss: () -> Unit,
     onSave: (String, String) -> Unit,
+    onAutoSave: (String, String) -> Unit,
     onDelete: (() -> Unit)?
 ) {
     var title by remember(note?.id) { mutableStateOf(note?.title.orEmpty()) }
     var content by remember(note?.id) { mutableStateOf(note?.content.orEmpty()) }
+    val checklistItems = remember(content) { parseChecklistItems(content) }
+
+    LaunchedEffect(title, content) {
+        if (title == note?.title.orEmpty() && content == note?.content.orEmpty()) return@LaunchedEffect
+        if (title.isBlank() && content.isBlank()) return@LaunchedEffect
+        delay(700)
+        onAutoSave(title, content)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (note == null) "新しいメモ" else "メモを編集") },
         text = {
-            Column {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("タイトル") },
-                    placeholder = { Text("タイトルを入力") }
-                )
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                OutlinedTextField(value = title, onValueChange = { title = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("タイトル") }, placeholder = { Text("タイトルを入力") })
                 Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = content,
-                    onValueChange = { content = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp),
-                    label = { Text("本文") },
-                    placeholder = { Text("内容を入力") }
-                )
+                OutlinedTextField(value = content, onValueChange = { content = it }, modifier = Modifier.fillMaxWidth().height(160.dp), label = { Text("本文") }, placeholder = { Text("内容を入力") })
+                TextButton(onClick = {
+                    content = content.trimEnd() + if (content.isBlank()) "- [ ] " else "\n- [ ] "
+                }) { Text("＋ チェック項目を追加") }
+                if (checklistItems.isNotEmpty()) {
+                    HorizontalDivider()
+                    Text("チェックリスト", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
+                    checklistItems.forEach { item ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = item.checked, onCheckedChange = { checked -> content = replaceChecklistItem(content, item.lineIndex, checked) })
+                            Text(item.text.ifBlank { "項目を入力" })
+                        }
+                    }
+                }
+                Text("入力内容は約1秒後に自動保存されます。", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
             }
         },
-        confirmButton = {
-            TextButton(onClick = { onSave(title, content) }) { Text("保存") }
-        },
+        confirmButton = { TextButton(onClick = { onSave(title, content) }) { Text("閉じる") } },
         dismissButton = {
             Row {
                 if (onDelete != null) {
-                    TextButton(onClick = onDelete) {
-                        Icon(Icons.Default.Delete, contentDescription = null)
-                        Spacer(Modifier.width(4.dp))
-                        Text("削除")
-                    }
+                    TextButton(onClick = onDelete) { Icon(Icons.Default.Delete, null); Spacer(Modifier.width(4.dp)); Text("削除") }
                 }
                 TextButton(onClick = onDismiss) { Text("キャンセル") }
             }
         }
     )
 }
+
+@Composable
+private fun TrashDialog(notes: List<Note>, onDismiss: () -> Unit, onRestore: (Note) -> Unit, onPermanentlyDelete: (Note) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("ゴミ箱") },
+        text = {
+            if (notes.isEmpty()) Text("ゴミ箱は空です。")
+            else Column(modifier = Modifier.height(260.dp).verticalScroll(rememberScrollState())) {
+                notes.forEach { note ->
+                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(note.title, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(formatDate(note.deletedAt ?: note.updatedAt), style = MaterialTheme.typography.labelSmall)
+                        }
+                        IconButton(onClick = { onRestore(note) }) { Icon(Icons.Default.RestoreFromTrash, contentDescription = "復元") }
+                        IconButton(onClick = { onPermanentlyDelete(note) }) { Icon(Icons.Default.Delete, contentDescription = "完全に削除") }
+                    }
+                    HorizontalDivider()
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("閉じる") } }
+    )
+}
+
+private data class ChecklistItem(val lineIndex: Int, val checked: Boolean, val text: String)
+
+private fun parseChecklistItems(content: String): List<ChecklistItem> {
+    val expression = Regex("^\\s*[-*]\\s*\\[([ xX])\\]\\s*(.*)$")
+    return content.lines().mapIndexedNotNull { index, line ->
+        expression.matchEntire(line)?.let { match -> ChecklistItem(index, match.groupValues[1].equals("x", true), match.groupValues[2]) }
+    }
+}
+
+private fun replaceChecklistItem(content: String, lineIndex: Int, checked: Boolean): String =
+    content.lines().mapIndexed { index, line ->
+        if (index == lineIndex) line.replace(Regex("\\[([ xX])\\]"), if (checked) "[x]" else "[ ]") else line
+    }.joinToString("\n")
+
+private fun notePreview(content: String): String =
+    content.ifBlank { "本文なし" }.replace("[ ]", "☐").replace("[x]", "☑").replace("[X]", "☑")
 
 private fun formatDate(timestamp: Long): String =
     SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.JAPAN).format(Date(timestamp))

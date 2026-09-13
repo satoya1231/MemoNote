@@ -16,3 +16,8 @@ captures/
 # Signing
 *.jks
 *.keystore
+
+# Downloaded build artifacts
+MemoNote.apk
+MemoNote-debug-apk.zip
+apk-output/

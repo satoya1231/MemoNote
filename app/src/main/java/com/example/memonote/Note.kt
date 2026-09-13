@@ -4,5 +4,7 @@ data class Note(
     val id: Long,
     val title: String,
     val content: String,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val isPinned: Boolean = false,
+    val deletedAt: Long? = null
 )

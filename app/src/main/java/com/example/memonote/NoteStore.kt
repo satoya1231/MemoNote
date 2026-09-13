@@ -19,11 +19,13 @@ class NoteStore(context: Context) {
                             id = item.getLong("id"),
                             title = item.optString("title"),
                             content = item.optString("content"),
-                            updatedAt = item.getLong("updatedAt")
+                            updatedAt = item.getLong("updatedAt"),
+                            isPinned = item.optBoolean("isPinned", false),
+                            deletedAt = if (item.isNull("deletedAt")) null else item.optLong("deletedAt")
                         )
                     )
                 }
-            }.sortedByDescending(Note::updatedAt)
+            }.sortedForDisplay()
         }.getOrElse { emptyList() }
     }
 
@@ -36,6 +38,8 @@ class NoteStore(context: Context) {
                     put("title", note.title)
                     put("content", note.content)
                     put("updatedAt", note.updatedAt)
+                    put("isPinned", note.isPinned)
+                    put("deletedAt", note.deletedAt ?: JSONObject.NULL)
                 }
             )
         }
@@ -46,3 +50,6 @@ class NoteStore(context: Context) {
         const val KEY_NOTES = "notes"
     }
 }
+
+fun List<Note>.sortedForDisplay(): List<Note> =
+    sortedWith(compareByDescending<Note> { it.isPinned }.thenByDescending { it.updatedAt })
