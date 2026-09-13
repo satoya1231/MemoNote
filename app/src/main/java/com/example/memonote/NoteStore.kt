@@ -9,24 +9,38 @@ class NoteStore(context: Context) {
 
     fun load(): List<Note> {
         val raw = preferences.getString(KEY_NOTES, null) ?: return emptyList()
-        return runCatching {
-            val array = JSONArray(raw)
-            buildList {
-                for (index in 0 until array.length()) {
-                    val item = array.getJSONObject(index)
-                    add(
-                        Note(
-                            id = item.getLong("id"),
-                            title = item.optString("title"),
-                            content = item.optString("content"),
-                            updatedAt = item.getLong("updatedAt"),
-                            isPinned = item.optBoolean("isPinned", false),
-                            deletedAt = if (item.isNull("deletedAt")) null else item.optLong("deletedAt")
-                        )
+        return parseNotes(raw)
+    }
+
+    fun exportJson(): String = preferences.getString(KEY_NOTES, "[]") ?: "[]"
+
+    fun importJson(raw: String): List<Note> {
+        val imported = parseNotesOrThrow(raw)
+        save(imported)
+        return imported
+    }
+
+    private fun parseNotes(raw: String): List<Note> {
+        return runCatching { parseNotesOrThrow(raw) }.getOrElse { emptyList() }
+    }
+
+    private fun parseNotesOrThrow(raw: String): List<Note> {
+        val array = JSONArray(raw)
+        return buildList {
+            for (index in 0 until array.length()) {
+                val item = array.getJSONObject(index)
+                add(
+                    Note(
+                        id = item.getLong("id"),
+                        title = item.optString("title"),
+                        content = item.optString("content"),
+                        updatedAt = item.getLong("updatedAt"),
+                        isPinned = item.optBoolean("isPinned", false),
+                        deletedAt = if (item.isNull("deletedAt")) null else item.optLong("deletedAt")
                     )
-                }
-            }.sortedForDisplay()
-        }.getOrElse { emptyList() }
+                )
+            }
+        }.sortedForDisplay()
     }
 
     fun save(notes: List<Note>) {

@@ -1,8 +1,12 @@
 package com.example.memonote
 
+import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -54,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -87,12 +92,41 @@ private fun MemoTheme(content: @Composable () -> Unit) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MemoApp(store: NoteStore) {
+    val context = LocalContext.current
     var notes by remember { mutableStateOf(store.load()) }
     var searchText by rememberSaveable { mutableStateOf("") }
     var editorNote by remember { mutableStateOf<Note?>(null) }
     var showEditor by rememberSaveable { mutableStateOf(false) }
     var showDeleteConfirmation by rememberSaveable { mutableStateOf(false) }
     var showTrash by rememberSaveable { mutableStateOf(false) }
+    var sortByTitle by rememberSaveable { mutableStateOf(false) }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(store.exportJson()) }
+                ?: error("保存先を開けませんでした")
+        }.onSuccess {
+            Toast.makeText(context, "バックアップを保存しました", Toast.LENGTH_SHORT).show()
+        }.onFailure {
+            Toast.makeText(context, "バックアップの保存に失敗しました", Toast.LENGTH_SHORT).show()
+        }
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                ?: error("ファイルを開けませんでした")
+        }.mapCatching { store.importJson(it) }
+            .onSuccess {
+                notes = it
+                Toast.makeText(context, "${it.size}件のメモを復元しました", Toast.LENGTH_SHORT).show()
+            }.onFailure {
+                Toast.makeText(context, "復元できないファイルです", Toast.LENGTH_SHORT).show()
+            }
+    }
 
     val activeNotes = notes.filter { it.deletedAt == null }
     val filteredNotes = remember(activeNotes, searchText) {
@@ -104,6 +138,11 @@ private fun MemoApp(store: NoteStore) {
         }
     }
     val trashedNotes = notes.filter { it.deletedAt != null }.sortedByDescending { it.deletedAt }
+    val displayedNotes = if (sortByTitle) {
+        filteredNotes.sortedWith(compareBy<Note> { !it.isPinned }.thenBy { it.title.lowercase(Locale.JAPAN) })
+    } else {
+        filteredNotes.sortedForDisplay()
+    }
 
     fun persist(updatedNotes: List<Note>) {
         notes = updatedNotes.sortedForDisplay()
@@ -165,6 +204,30 @@ private fun MemoApp(store: NoteStore) {
         persist(notes.filterNot { it.id == note.id })
     }
 
+    fun duplicateNote(note: Note) {
+        val copied = note.copy(
+            id = System.currentTimeMillis(),
+            title = "${note.title}（コピー）",
+            updatedAt = System.currentTimeMillis(),
+            isPinned = false,
+            deletedAt = null
+        )
+        persist(notes + copied)
+        editorNote = copied
+    }
+
+    fun shareNote(note: Note) {
+        val text = buildString {
+            append(note.title)
+            if (note.content.isNotBlank()) append("\n\n${note.content}")
+        }
+        context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TITLE, note.title)
+            putExtra(Intent.EXTRA_TEXT, text)
+        }, "メモを共有"))
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -176,6 +239,8 @@ private fun MemoApp(store: NoteStore) {
                     }
                 },
                 actions = {
+                    TextButton(onClick = { exportLauncher.launch("MemoNote-backup.json") }) { Text("保存") }
+                    TextButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) }) { Text("復元") }
                     IconButton(onClick = { showTrash = true }) {
                         Icon(Icons.Default.DeleteOutline, contentDescription = "ゴミ箱")
                     }
@@ -203,21 +268,26 @@ private fun MemoApp(store: NoteStore) {
             )
             Spacer(Modifier.height(16.dp))
 
-            if (filteredNotes.isEmpty()) {
+            if (displayedNotes.isEmpty()) {
                 EmptyState(hasSearch = searchText.isNotBlank(), onCreate = ::openNewNote)
             } else {
-                Text(
-                    text = if (searchText.isBlank()) "すべてのメモ" else "検索結果 ${filteredNotes.size}件",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (searchText.isBlank()) "すべてのメモ" else "検索結果 ${displayedNotes.size}件",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = { sortByTitle = !sortByTitle }) {
+                        Text(if (sortByTitle) "更新順" else "名前順")
+                    }
+                }
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(bottom = 88.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(filteredNotes, key = Note::id) { note ->
+                    items(displayedNotes, key = Note::id) { note ->
                         NoteCard(note, onClick = { openNote(note) }, onTogglePin = { togglePin(note) })
                     }
                 }
@@ -231,7 +301,9 @@ private fun MemoApp(store: NoteStore) {
             onDismiss = { showEditor = false },
             onSave = { title, content -> upsertNote(title, content); showEditor = false },
             onAutoSave = ::upsertNote,
-            onDelete = if (editorNote == null) null else ({ showDeleteConfirmation = true })
+            onDelete = if (editorNote == null) null else ({ showDeleteConfirmation = true }),
+            onShare = editorNote?.let { { shareNote(it) } },
+            onDuplicate = editorNote?.let { { duplicateNote(it) } }
         )
     }
 
@@ -306,7 +378,9 @@ private fun NoteEditorDialog(
     onDismiss: () -> Unit,
     onSave: (String, String) -> Unit,
     onAutoSave: (String, String) -> Unit,
-    onDelete: (() -> Unit)?
+    onDelete: (() -> Unit)?,
+    onShare: (() -> Unit)?,
+    onDuplicate: (() -> Unit)?
 ) {
     var title by remember(note?.id) { mutableStateOf(note?.title.orEmpty()) }
     var content by remember(note?.id) { mutableStateOf(note?.content.orEmpty()) }
@@ -346,6 +420,8 @@ private fun NoteEditorDialog(
         confirmButton = { TextButton(onClick = { onSave(title, content) }) { Text("閉じる") } },
         dismissButton = {
             Row {
+                if (onShare != null) TextButton(onClick = onShare) { Text("共有") }
+                if (onDuplicate != null) TextButton(onClick = onDuplicate) { Text("複製") }
                 if (onDelete != null) {
                     TextButton(onClick = onDelete) { Icon(Icons.Default.Delete, null); Spacer(Modifier.width(4.dp)); Text("削除") }
                 }
