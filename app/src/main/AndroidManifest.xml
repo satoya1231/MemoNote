@@ -2,7 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
         android:allowBackup="true"
+        android:icon="@drawable/ic_memo_note"
         android:label="メモ帳"
+        android:roundIcon="@drawable/ic_memo_note"
         android:supportsRtl="true"
         android:theme="@style/Theme.MemoNote">
         <activity
