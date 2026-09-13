@@ -16,10 +16,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -51,7 +49,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -326,7 +323,7 @@ private fun NoteEditorDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (note == null) "新しいメモ" else "メモを編集") },
         text = {
-            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            Column {
                 OutlinedTextField(value = title, onValueChange = { title = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("タイトル") }, placeholder = { Text("タイトルを入力") })
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(value = content, onValueChange = { content = it }, modifier = Modifier.fillMaxWidth().height(160.dp), label = { Text("本文") }, placeholder = { Text("内容を入力") })
@@ -365,7 +362,7 @@ private fun TrashDialog(notes: List<Note>, onDismiss: () -> Unit, onRestore: (No
         title = { Text("ゴミ箱") },
         text = {
             if (notes.isEmpty()) Text("ゴミ箱は空です。")
-            else Column(modifier = Modifier.height(260.dp).verticalScroll(rememberScrollState())) {
+            else Column(modifier = Modifier.height(260.dp)) {
                 notes.forEach { note ->
                     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
