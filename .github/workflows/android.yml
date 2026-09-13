@@ -24,4 +24,5 @@ jobs:
           curl -fsSL https://services.gradle.org/distributions/gradle-8.11.1-bin.zip -o gradle.zip
           unzip -q gradle.zip -d "$RUNNER_TEMP"
       - name: Build debug APK
-        run: "$RUNNER_TEMP/gradle-8.11.1/bin/gradle" --no-daemon assembleDebug
+        run: |
+          "$RUNNER_TEMP/gradle-8.11.1/bin/gradle" --no-daemon assembleDebug
