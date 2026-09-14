@@ -1,13 +1,17 @@
 package com.example.memonote
 
+import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -76,6 +80,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         // ナビゲーションバーをアプリの上に重ねず、常に操作できるようにする。
         WindowCompat.setDecorFitsSystemWindows(window, true)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_DEFAULT
+            show(WindowInsetsCompat.Type.navigationBars())
+        }
         val store = NoteStore(applicationContext)
         setContent { MemoTheme { MemoApp(store) } }
     }
@@ -392,9 +400,20 @@ private fun NoteEditorDialog(
     onShare: (() -> Unit)?,
     onDuplicate: (() -> Unit)?
 ) {
+    val context = LocalContext.current
     var title by remember(note?.id) { mutableStateOf(note?.title.orEmpty()) }
     var content by remember(note?.id) { mutableStateOf(note?.content.orEmpty()) }
     val checklistItems = remember(content) { parseChecklistItems(content) }
+    val voiceInputLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val recognizedText = if (result.resultCode == Activity.RESULT_OK) {
+            result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+        } else {
+            null
+        }
+        if (!recognizedText.isNullOrBlank()) {
+            content = content.trimEnd() + if (content.isBlank()) recognizedText else "\n$recognizedText"
+        }
+    }
 
     LaunchedEffect(title, content) {
         if (title == note?.title.orEmpty() && content == note?.content.orEmpty()) return@LaunchedEffect
@@ -411,9 +430,20 @@ private fun NoteEditorDialog(
                 OutlinedTextField(value = title, onValueChange = { title = it }, modifier = Modifier.fillMaxWidth(), singleLine = true, label = { Text("タイトル") }, placeholder = { Text("タイトルを入力") })
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(value = content, onValueChange = { content = it }, modifier = Modifier.fillMaxWidth().height(160.dp), label = { Text("本文") }, placeholder = { Text("内容を入力") })
-                TextButton(onClick = {
-                    content = content.trimEnd() + if (content.isBlank()) "- [ ] " else "\n- [ ] "
-                }) { Text("＋ チェック項目を追加") }
+                Row {
+                    TextButton(onClick = {
+                        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.JAPAN.toLanguageTag())
+                            putExtra(RecognizerIntent.EXTRA_PROMPT, "話してください")
+                        }
+                        runCatching { voiceInputLauncher.launch(intent) }
+                            .onFailure { Toast.makeText(context, "音声入力を開始できません", Toast.LENGTH_SHORT).show() }
+                    }) { Text("🎤 音声入力") }
+                    TextButton(onClick = {
+                        content = content.trimEnd() + if (content.isBlank()) "- [ ] " else "\n- [ ] "
+                    }) { Text("＋ チェック項目") }
+                }
                 if (checklistItems.isNotEmpty()) {
                     HorizontalDivider()
                     Text("チェックリスト", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp))
